@@ -4,7 +4,7 @@ import java.io.*
 val kotlinVersion = "1.2.40"
 
 group = "org.rust.devkt.lang"
-version = "v1.0"
+version = "v1.1"
 
 plugins {
 	java

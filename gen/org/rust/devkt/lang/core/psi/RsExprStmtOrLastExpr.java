@@ -3,7 +3,6 @@ package org.rust.devkt.lang.core.psi;
 
 import java.util.List;
 import org.jetbrains.annotations.*;
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement;
 
 public interface RsExprStmtOrLastExpr extends RsExpr {
 

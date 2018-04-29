@@ -801,8 +801,6 @@ MacroReference ::= '$' MetaVarIdentifier
 MacroExpansionReferenceGroup ::= '$' '(' MacroExpansionContents ')' MacroExpansionGroupSeparator? ('*' | '+' | '?') { pin = 2 }
 MacroExpansionGroupSeparator ::= <<macroBindingGroupSeparatorToken>>
 
-
-
 MacroCall ::= MacroHead <<macroSemicolon>> {
   pin = 2
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
