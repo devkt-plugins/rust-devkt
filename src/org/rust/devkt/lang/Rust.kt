@@ -1,6 +1,7 @@
 package org.rust.devkt.lang
 
 import org.ice1000.devkt.openapi.*
+import org.ice1000.devkt.openapi.util.CompletionElement
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.tree.IElementType
@@ -14,6 +15,7 @@ class Rust<T> : ExtendedDevKtLanguage<T>(RsLanguage, RustParserDefinition) {
 	override val icon: Icon get() = RsIcons.RUST_FILE
 	override val lineCommentStart get() = "//"
 	override val blockComment = "/*" to "*/"
+	override val initialCompletionElementList = setOf(CompletionElement("println!", "p"))
 	override fun createLexer(project: Project) = RsHighlightingLexer()
 	override fun attributesOf(type: IElementType, colorScheme: ColorScheme<T>) = when (type) {
 		RsElementTypes.COMMA -> colorScheme.comma
