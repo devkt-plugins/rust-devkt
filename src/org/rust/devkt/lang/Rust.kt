@@ -21,7 +21,8 @@ class Rust<T> : ExtendedDevKtLanguage<T>(RsLanguage, RustParserDefinition) {
 			"default", "else", "enum", "extern", "fn", "for", "if", "impl",
 			"in", "macro", "let", "loop", "match", "mod", "move", "mut",
 			"pub", "ref", "return", "self", "static", "struct", "super",
-			"trait", "type", "union", "unsafe", "use", "where", "while"
+			"trait", "type", "union", "unsafe", "use", "where", "while",
+			"default", "union", "auto", "dyn"
 	).mapTo(mutableSetOf(
 			object : CompletionElement("println!", "p") {
 				override fun afterInsert(documentHandler: DevKtDocumentHandler<*>) = documentHandler.insert("(")
@@ -61,6 +62,8 @@ class Rust<T> : ExtendedDevKtLanguage<T>(RsLanguage, RustParserDefinition) {
 			element is RsPatBinding -> document.highlight(element.identifier, colorScheme.variable)
 			element is RsBaseType -> generateSequence(element.path) { it.path }.forEach { path(it, document, colorScheme) }
 			element is RsModDeclItem -> document.highlight(element.identifier, colorScheme.namespace)
+			element is RsLifetimeParameter -> document.highlight(element, colorScheme.typeParam)
+			element is RsTypeParameter -> document.highlight(element.identifier, colorScheme.typeParam)
 			element is RsMacroCall -> {
 				document.highlight(element.excl, colorScheme.macro)
 				element.excl.prevSibling?.let { document.highlight(it, colorScheme.macro) }
