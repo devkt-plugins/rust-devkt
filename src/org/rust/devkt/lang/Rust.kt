@@ -12,18 +12,26 @@ import org.rust.devkt.lang.core.psi.*
 import javax.swing.Icon
 
 class Rust<T> : ExtendedDevKtLanguage<T>(RsLanguage, RustParserDefinition) {
-	override fun satisfies(fileName: String) = fileName.endsWith(".rs")
+	override fun satisfies(fileName: String) = fileName.endsWith(".${RsFileType.EXTENSION}")
 	override val icon: Icon get() = RsIcons.RUST_FILE
 	override val lineCommentStart get() = "//"
 	override val blockComment = "/*" to "*/"
-	override val initialCompletionElementList = setOf(
+	override val initialCompletionElementList = listOf(
+			"as", "box", "break", "const", "continue", "crate", "cself",
+			"default", "else", "enum", "extern", "fn", "for", "if", "impl",
+			"in", "macro", "let", "loop", "match", "mod", "move", "mut",
+			"pub", "ref", "return", "self", "static", "struct", "super",
+			"trait", "type", "union", "unsafe", "use", "where", "while"
+	).mapTo(mutableSetOf(
 			object : CompletionElement("println!", "p") {
 				override fun afterInsert(documentHandler: DevKtDocumentHandler<*>) = documentHandler.insert("(")
 			},
 			object : CompletionElement("fn main() ", "main") {
 				override fun afterInsert(documentHandler: DevKtDocumentHandler<*>) = documentHandler.insert("{")
 			})
+	) { CompletionElement(it, type = "Keyword") }
 
+	override fun shouldAddAsCompletion(element: PsiElement) = element is RsValueParameter
 	override fun createLexer(project: Project) = RsHighlightingLexer()
 	override fun attributesOf(type: IElementType, colorScheme: ColorScheme<T>) = when (type) {
 		RsElementTypes.COMMA -> colorScheme.comma
@@ -31,10 +39,12 @@ class Rust<T> : ExtendedDevKtLanguage<T>(RsLanguage, RustParserDefinition) {
 		RsElementTypes.SEMICOLON -> colorScheme.semicolon
 		RsElementTypes.INTEGER_LITERAL,
 		RsElementTypes.FLOAT_LITERAL -> colorScheme.numbers
-		RsElementTypes.STRING_LITERAL -> colorScheme.string
+		RsElementTypes.SHEBANG_LINE -> colorScheme.lineComments
 		RustParserDefinition.EOL_COMMENT -> colorScheme.lineComments
 		RustParserDefinition.BLOCK_COMMENT -> colorScheme.blockComments
 		RsElementTypes.BOOL_LITERAL -> colorScheme.keywords
+		in RS_STRING_LITERALS -> colorScheme.string
+		in RS_RAW_LITERALS -> colorScheme.string
 		in RS_KEYWORDS -> colorScheme.keywords
 		in RS_OPERATORS -> colorScheme.operators
 		else -> super.attributesOf(type, colorScheme)
