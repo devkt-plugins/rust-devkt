@@ -1,0 +1,929 @@
+{
+    parserClass='org.rust.devkt.lang.core.parser.RustParser'
+    parserUtilClass='org.rust.devkt.lang.core.parser.RustParserUtil'
+
+    implements='org.rust.devkt.lang.core.psi.ext.RsElement'
+    extends='org.rust.devkt.lang.core.psi.ext.RsElementImpl'
+
+    elementTypeHolderClass='org.rust.devkt.lang.core.psi.RsElementTypes'
+
+    elementTypeClass='org.rust.devkt.lang.core.psi.RsElementType'
+    tokenTypeClass='org.rust.devkt.lang.core.psi.RsTokenType'
+
+    psiClassPrefix='Rs'
+    psiImplClassSuffix='Impl'
+    psiPackage='org.rust.devkt.lang.core.psi'
+    psiImplPackage='org.rust.devkt.lang.core.psi.impl'
+
+    parserImports=[
+      'static org.rust.devkt.lang.core.parser.RustParserUtil.PathParsingMode.*'
+      'static org.rust.devkt.lang.core.parser.RustParserUtil.BinaryMode.*'
+    ]
+
+    tokens = [
+        LBRACE      =  '{'
+        RBRACE      =  '}'
+        LBRACK      =  '['
+        RBRACK      =  ']'
+        LPAREN      =  '('
+        RPAREN      =  ')'
+        COLON       =  ':'
+        COLONCOLON  =  '::'
+        SEMICOLON   =  ';'
+        COMMA       =  ','
+        EQ          =  '='
+        EXCLEQ      =  '!='
+        EQEQ        =  '=='
+        SHA         =  '#'
+        EXCL        =  '!'
+        PLUSEQ      =  '+='
+        PLUS        =  '+'
+        MINUSEQ     =  '-='
+        MINUS       =  '-'
+        OREQ        =  '|='
+        ANDAND      =  '&&'
+        ANDEQ       =  '&='
+        AND         =  '&'
+        OR          =  '|'
+        LT          =  '<'
+        XOREQ       =  '^='
+        XOR         =  '^'
+        MULEQ       =  '*='
+        MUL         =  '*'
+        DIVEQ       =  '/='
+        DIV         =  '/'
+        REMEQ       =  '%='
+        REM         =  '%'
+        GT          =  '>'
+        DOT         =  '.'
+        DOTDOT      =  '..'
+        DOTDOTDOT   =  '...'
+        DOTDOTEQ    =  '..='
+        FAT_ARROW   =  '=>'
+        ARROW       =  '->'
+        Q           =  '?'
+        AT          =  '@'
+        UNDERSCORE  =  '_'
+        DOLLAR      =  '$'
+
+        MACRO_KW  = 'macro'
+        CSELF     = 'Self'
+        TYPE_KW   = 'type'
+        UNION     = 'union_kw'
+        DEFAULT   = 'default_kw'
+        AUTO      = 'auto_kw'
+        DYN       = 'dyn_kw'
+
+        SHEBANG_LINE = 'shebang_line'
+        RESERVED_KEYWORD = 'reserved_keyword'
+    ]
+
+    elementType("(Fn|Anon|Lambda|Path)Parameter") = ValueParameter
+    elementType("(Fn|Lambda|Path|FnType)Parameters") = ValueParameterList
+
+    extends("(.+Expr|StructLiteral)") = Expr
+    elementType(".+BinExpr") = BinaryExpr
+    elementType(".+BinOp") = BinaryOp
+
+    extends("Pat(Wild|Ref|Tup|Vec|Macro|Struct|Enum|Ident|Range|Uniq|QualPath|Const)") = Pat
+
+    generateTokenAccessors=true
+
+    consumeTokenMethod("(.*_recover)|(.*Expr)|BinAssignOp") = "consumeTokenFast"
+}
+
+// This is the grammar of the Rust language which is used by Grammar Kit
+// to generate the parser and the PSI classes. Rule `FooBar` corresponds
+// to `RsFooBar` PSI class.
+//
+// Naming convention:
+//
+//   * tokens are lowercase: for, if, identifier
+//   * rules are PascalCase: StructItem, EnumVariant
+//   * macro rules are snake_cased: list_item
+//   * recovery related rules are PascalCase_with_snake_suffix: Item_recover
+
+
+File ::= [ SHEBANG_LINE ] InnerAttr* Items
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Attributes
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+fake Attr ::= MetaItem
+
+InnerAttr ::= '#' '!' '[' MetaItem ']' {
+  extends = Attr
+}
+OuterAttr ::= '#'     '[' MetaItem ']' {
+  extends = Attr
+}
+private OuterAttr_first ::= '#'
+
+MetaItem ::= identifier [ '=' (LitExpr | PathIdent) | MetaItemArgs ]
+MetaItemArgs ::= '(' [ <<comma_separated_list (MetaItem | LitExpr)>> ] ')'
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Paths
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+private PathIdentInner ::= !("union" identifier) identifier | self | super | 'Self'
+
+fake Path ::= (Path '::' | '::' | TypeQual)? PathIdentInner PathTypeArguments?
+private Path_first ::= identifier | self | 'Self' | super | '::' | '<'
+
+private PathImpl ::= PathStart PathSegment*
+
+PathIdent ::= PathIdentInner { elementType = Path }
+
+PathStart ::= ('::' | <<checkTypeQualAllowed>> TypeQual)? PathIdentInner PathTypeArguments? { elementType = Path }
+//    <T as Foo>::bar::baz::<i32>
+//    ^~~~~~~~~~~^ TypeQual
+TypeQual ::= '<' TypeReference [ as TraitRef] '>' '::'
+
+left PathSegment ::= '::' PathIdentInner PathTypeArguments? { elementType = Path }
+
+private PathTypeArguments ::= <<isPathMode 'COLONS'>> ColonTypeArgumentList
+                            | <<isPathMode 'NO_COLONS '>> ( TypeArgumentList | PathParameters RetType? ) // Fn(i32) -> i32 sugar
+
+TypeArgumentList ::= TypeArgumentListImpl
+ColonTypeArgumentList ::= '::' TypeArgumentListImpl { elementType = TypeArgumentList }
+
+private TypeArgumentListImpl ::= '<' !'=' ( <<list_element Lifetime>>*
+                                            <<list_element (!(identifier '=') TypeReference)>>*
+                                            <<list_element AssocTypeBinding>>*) '>' { pin = 2 }
+AssocTypeBinding ::= identifier '=' TypeReference {
+  pin = 2
+}
+
+
+// Paths for expressions:
+//     a::b::<T,U>::c
+PathGenericArgsWithoutColons ::= <<typeQuals 'ON' <<pathMode 'NO_COLONS' PathImpl>>>> { elementType = Path }
+PathGenericArgsWithoutColonsNoTypeQual ::= <<typeQuals 'OFF' <<pathMode 'NO_COLONS' PathImpl>>>> { elementType = Path }
+
+// Paths without type arguments, for use declarations:
+//     a::b::c
+PathWithoutTypes ::= <<typeQuals 'OFF' <<pathMode 'NO_TYPES' PathImpl>>>> { elementType = Path }
+
+// Paths for types:
+//    a::b<T,U>::c<V,W>
+//    a::b<T,U>::c(V) -> W
+//    a::b<T,U>::c(V)
+PathGenericArgsWithColons ::= <<typeQuals 'ON' <<pathMode 'COLONS' PathImpl>>>> { elementType = Path }
+PathGenericArgsWithColonsNoTypeQual ::= <<typeQuals 'OFF' <<pathMode 'COLONS' PathImpl>>>> { elementType = Path }
+
+// Path semantically constrained to resolve to a trait
+TraitRef ::= PathGenericArgsWithoutColonsNoTypeQual
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Items
+///////////////////////////////////////////////////////////////////////////////////////////////////
+Vis ::= crate | pub VisRestriction?
+VisRestriction ::= '(' ( crate | ((&(self ')' | super ')') | in) PathWithoutTypes) ) ')'
+
+//XXX: don't use contextual keywords in recover, because they remap tokens.
+private default_ ::= <<defaultKeyword>>
+private union ::= <<unionKeyword>>
+private auto ::= <<autoKeyword>>
+private dyn ::= <<dynKeyword>>
+
+private AttrsAndVis ::= OuterAttr* Vis?
+
+private Item ::= Constant
+               | TypeAlias
+               | Function
+               | TraitItem
+               | ImplItem
+               | ModItem
+               | ModDeclItem
+               | ForeignModItem
+               | StructItem
+               | EnumItem
+               | UseItem
+               | ExternCrateItem
+               | MacroDefinition
+               | MacroCall
+
+private Item_with_recover ::= !('}' | <<eof>>) Item {
+  pin = 1
+  recoverWhile = Item_recover
+}
+private Item_first ::= '#' | pub | crate | fn | const | extern | unsafe | struct | enum | use | identifier | mod | trait
+  | static | TYPE_KW | impl | "union" | "default" | "auto" | "dyn"
+private Item_recover ::= !('}' | Item_first )
+
+private Items ::= Item_with_recover*
+
+Lifetime ::= QUOTE_IDENTIFIER {
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Functions
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Parameters
+fake ValueParameter ::= Pat? TypeReference?
+
+FnParameter ::= [ Pat ':' ] TypeReference
+private FnParameter_with_recover ::= FnParameter (',' | &')') {
+  pin = 1
+  recoverWhile = FnParameter_recover
+}
+private FnParameter_recover ::= !(Pat_first | ')' | '...')
+
+LambdaParameter ::= Pat TypeAscription?
+AnonParameter ::= [ RestrictedPat ':' ] TypeReference
+PathParameter ::= TypeReference !'='
+
+SelfParameter ::= [ '&' Lifetime? ] mut? self TypeAscription? {
+}
+
+fake ValueParameterList ::= SelfParameter? ValueParameter* '...'?
+
+FnParameters          ::= '(' !',' [ SelfParameter (',' | &')') ]
+                                   FnParameter_with_recover* ['...' ','? ]
+                          ')' { pin = 1 }
+LambdaParameters      ::= '|' !',' [ <<comma_separated_list LambdaParameter>> ] '|'
+
+FnTypeParameters      ::= <<variadic_params_impl AnonParameter>>
+PathParameters        ::= '(' [ <<comma_separated_list PathParameter>> ] ')' { pin = 1 }
+
+
+private meta variadic_params_impl ::= '(' [ <<param>> (',' <<param>>)*  [ ',' '...'? ] ] ')' { pin = 1 }
+
+private RestrictedPat ::= &( [ mut | '&' '&'? ] ( identifier | '_' ) ) Pat
+
+TypeParameterList ::= '<' <<list_element (LifetimeParameter | TypeParameter)>>* '>'
+
+private LifetimesParams ::= <<list_element LifetimeParameter>>*
+
+LifetimeParameter ::= OuterAttr* QUOTE_IDENTIFIER LifetimeParamBounds? {
+}
+
+LifetimeParamBounds ::= ':' Lifetime ('+' Lifetime)*
+
+TypeParameter ::= OuterAttr* identifier TypeParamBounds? [ '=' TypeReference ] {
+}
+
+TypeParamBounds ::= ':' [ Polybound ('+' Polybound)* '+'? ]
+
+Polybound ::= [ ForLifetimes | '?' ] Bound
+
+WhereClause ::= where <<comma_separated_list WherePred>>?
+
+WherePred ::= Lifetime LifetimeParamBounds | ForLifetimes? TypeReference TypeParamBounds
+ForLifetimes ::= for '<' LifetimesParams '>'
+
+ExternAbi ::= extern STRING_LITERAL?
+
+RetType ::= '->' TypeReferenceNoImplicitTraitType {
+  pin = 1
+}
+
+Function ::= OuterAttr*
+             default_?
+             Vis?
+             const? unsafe? ExternAbi?
+             fn identifier
+             TypeParameterList?
+             FnParameters
+             RetType?
+             WhereClause?
+             (';' | InnerAttrsAndBlock)
+{
+  pin = 'identifier'
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+Pat ::= PatWild
+      | PatRef
+      | PatTup
+      | PatVec
+      | PatMacro
+      | PatStruct
+      | PatEnum
+      | PatIdent
+      | (PatConst !('..' | '...' | '..='))
+      | PatRange
+      | PatUniq
+
+private Pat_first ::= '_' | '&' | '(' | '[' | Path_first | LitExpr  | box | '-' | ref | mut
+
+PatUniq ::= box Pat
+
+// XXX(matklad): it is impossible to distinguish between nullary enum variants
+// and identifiers during parsing.
+//
+//   match x {
+//       None => { } // match enum variant
+//       Name => { } // bind Name to x
+//   }
+PatIdent ::= PatBinding [ '@' Pat ]
+
+PatStruct ::= PathGenericArgsWithColonsNoTypeQual '{' PatField_with_recover* '..'? '}'
+PatEnum   ::= PathGenericArgsWithColonsNoTypeQual '(' SeqPat ')'
+
+// TODO: actual recover
+private Pat_with_recover ::= Pat (',' | &(')' | ']' | '..'))
+private PatField_with_recover ::= PatField (',' | & '}')
+
+PatConst ::= PathExpr | LitExpr | &('-' LitExpr) UnaryExpr
+PatRange ::= PatConst ('..' | '...' | '..=') PatConst { pin = 2 }
+
+PatTup ::= '(' SeqPat ')'
+PatVec ::= '[' SeqPat ']'
+// NB: there are `[x, .. , y]` and `[x, z.. , y]`
+private SeqPat ::= Pat_with_recover* ['..' [',' Pat_with_recover+] ]
+
+PatRef ::= '&' mut? Pat
+
+PatWild ::= '_'
+PatBinding ::= BindingMode? identifier !'...' !'::'
+
+PatField ::= identifier ':' Pat | box? PatBinding
+
+BindingMode ::= ref mut? | mut
+
+Constant ::= OuterAttr* default_? Vis? (static mut? | const) identifier TypeAscription [ '=' AnyExpr ] ';' {
+  pin = 'identifier'
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+UseItem ::= AttrsAndVis use UseSpeck ';' {
+  pin = "use"
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+// You can see the following after the `use`:
+//  ::{};
+//  {foo, bar};
+//  foo::bar as baz;
+//  foo::bar::{self, foo};
+//  foo::{};
+//  ::foo::*;
+UseSpeck ::= PathWithoutTypes [ Alias | '::' UseSpeckProjection ]
+           | '::'? UseSpeckProjection
+
+private UseSpeckProjection ::= '*' | UseGroup
+UseGroup ::= '{' UseSpeck_with_recover* '}' {
+  pin = 1
+}
+private UseSpeck_with_recover ::= !'}' UseSpeck (','|&'}') {
+  pin = 1
+  recoverWhile = UseSpeck_recover
+}
+private UseSpeck_recover ::= !('}' | self | identifier | '::' | '*' )
+
+Alias ::= as identifier
+
+ExternCrateItem ::= AttrsAndVis extern crate identifier Alias? ';' {
+  pin = "identifier"
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+ModItem ::= AttrsAndVis mod identifier '{' InnerAttr* Items '}' {
+  pin = 4
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+ModDeclItem ::= AttrsAndVis mod identifier ';' {
+  pin = 'identifier' // make sure `ModDeclItem` goes **after** `ModItem`
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+ForeignModItem ::= AttrsAndVis ExternAbi '{' InnerAttr* ForeignDecl* '}' {
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+private ForeignDecl ::= Constant | Function | TypeAlias
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Struct & Enums
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+StructItem ::= AttrsAndVis (struct | union) identifier TypeParameterList?
+               ( TupleStructTail | BlockStructTail | UnitStructTail ) {
+  pin = 2
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+private TupleStructTail ::= TupleFields WhereClause? ';' { pin = 1 }
+private UnitStructTail ::= WhereClause? ';'
+private BlockStructTail ::= WhereClause? BlockFields
+
+EnumItem ::= AttrsAndVis enum identifier TypeParameterList? WhereClause? EnumBody {
+  pin = "enum"
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+EnumBody ::= '{' [ <<comma_separated_list EnumVariant>> ] '}' {
+  pin = 1
+}
+
+EnumVariant ::= OuterAttr* identifier VariantArgs? {
+  pin = 2
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+private VariantArgs ::= BlockFields | TupleFields | VariantDiscriminant
+
+BlockFields ::= '{' (FieldDecl (',' | &'}'))* '}' {
+  pin = 1
+}
+
+TupleFields ::= '(' (TupleFieldDecl (',' | &')'))* ')' {
+  pin = 1
+}
+
+VariantDiscriminant ::= '=' AnyExpr {
+  pin = 1
+}
+
+FieldDecl ::= AttrsAndVis identifier TypeAscription {
+  pin = 2
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+  recoverWhile = Field_recover
+}
+private Field_recover ::= !('}' | ',')
+
+TupleFieldDecl ::= AttrsAndVis TypeReference {
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+  recoverWhile = TupleField_recover
+}
+private TupleField_recover ::= !(')' | ',')
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Trait & Impl
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+TraitItem ::= AttrsAndVis unsafe? auto? trait identifier TypeParameterList? TypeParamBounds? WhereClause? Members {
+  pin = "trait"
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+ImplItem ::= AttrsAndVis default_? unsafe? impl TypeParameterList? ( TraitImpl | InherentImpl ) WhereClause? Members {
+  pin = "impl"
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+private TraitImpl ::= '!'? TraitRef for ('..' | TypeReference)  { pin = 3 }
+private InherentImpl ::= TypeReference !for
+
+Members ::= '{' InnerAttr* Member* '}' {
+  pin = 1
+}
+
+private Member ::= !'}' ( Function | Constant | TypeAlias | MacroCall ) {
+  pin = 1
+  recoverWhile = Member_recover
+}
+private Member_recover ::=  !('#' | Vis | extern | const | static | unsafe | fn | (identifier '!') | TYPE_KW | "default" | '}')
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Types
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+private TypeAscription ::= ':' TypeReference
+
+private TypeReferenceInner ::= ArrayType
+                               | RefLikeType
+                               | FnPointerType
+                               // External rule to find the difference between `(T)` and `(T,)`
+                               | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
+                               | ExplicitTraitType
+                               | TrivialBaseType
+                               // External rule to find the difference between `T` and `T+T`
+                               | <<baseOrTraitType PathGenericArgsWithoutColons ImplicitTraitType TraitType_upper>>
+                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
+
+private TypeReferenceNoImplicitTraitTypeInner ::= ArrayType
+                               | RefLikeType
+                               | FnPointerType
+                               // External rule to find the difference between `(T)` and `(T,)`
+                               | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
+                               | ExplicitTraitType
+                               | BaseType
+                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
+
+private ScalarTypeReferenceInner ::= ArrayType
+                                   | RefLikeType
+                                   | FnPointerType
+                                   | BaseType
+                                   | <<tupleOrParenType ScalarTypeReferenceInner TupleType_upper>>
+                                   | ForInType
+
+TypeReference ::= TypeReferenceInner
+
+TypeReferenceNoImplicitTraitType ::= TypeReferenceNoImplicitTraitTypeInner { elementType = TypeReference }
+ScalarTypeReference ::= ScalarTypeReferenceInner { elementType = TypeReference }
+
+ArrayType ::= '[' TypeReference [';' AnyExpr] ']'
+RefLikeType ::= ( '&' Lifetime? mut? | '*' [ const | mut ] ) TypeReference
+FnPointerType ::= [ unsafe? ExternAbi? ] fn FnTypeParameters RetType?
+
+TupleType ::= '(' [ <<comma_separated_list TypeReference>> ] ')'
+private TupleType_upper ::= (',' TypeReference)* ','? ')'
+
+Bound ::= Lifetime | TraitRef
+
+ForInType ::= ForLifetimes (FnPointerType | TraitRef)
+
+BaseType ::= TrivialBaseTypeInner | PathGenericArgsWithoutColons
+
+TrivialBaseType ::= TrivialBaseTypeInner { elementType = BaseType }
+private TrivialBaseTypeInner ::= '(' ')' | '_' | '!'
+
+// `impl Trait` or `dyn Trait` or `Trait+'a`
+fake TraitType ::= ExplicitTraitTypeInner | ImplicitTraitTypeInner
+
+ExplicitTraitType ::= ExplicitTraitTypeInner { elementType = TraitType }
+private ExplicitTraitTypeInner ::= (impl | dyn) Polybound ('+' Polybound)*
+
+ImplicitTraitType ::= ImplicitTraitTypeInner { elementType = TraitType }
+private ImplicitTraitTypeInner ::= Polybound ('+' Polybound)+
+
+private TraitType_upper ::= ('+' Polybound)+
+
+TypeAlias ::= OuterAttr* default_? Vis? TYPE_KW identifier
+              [ TypeParameterList WhereClause? | WhereClause | TypeParamBounds ]
+              [ '=' TypeReference ] ';' {
+  pin = 'identifier'
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Expressions
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// https://doc.rust-lang.org/reference.html#operator-precedence
+// https://github.com/JetBrains/Grammar-Kit/blob/master/HOWTO.md#24-compact-expression-parsing-with-priorities
+//
+// Rust expression grammar allows or forbids struct literals depending on context.
+// There are `no_struct_lit_expr` and `any_expr` productions for this two cases.
+// `expr` production is an implementation detail. It passes the context information to the child expressions.
+Expr ::= RetExpr
+       | LambdaExpr
+       | AssignBinExpr
+
+       | WhileExpr
+       | IfExpr
+       | ForExpr
+       | LoopExpr
+       | MatchExpr
+       | BlockExpr
+
+       | ContExpr
+       | BreakExpr
+       | FullRangeExpr
+       | OpenRangeExpr
+       | BoolOrBinExpr
+       | BoolAndBinExpr
+       | CompBinExpr
+       | RelCompBinExpr
+       | BitOrBinExpr
+       | BitXorBinExpr
+       | BitAndBinExpr
+       | BitShiftBinExpr
+       | AddBinExpr
+       | MulBinExpr
+       | CastExpr
+       | UnaryExpr
+       | TryExpr
+       | AtomExpr
+private Expr_first ::= return | '|' | Path_first | '{' | '[' | '(' | '..' | '...' | '..=' | true | false | box | QUOTE_IDENTIFIER
+  | '-' | '*' | '!' | '&' | move | LitExpr | while | if | for | continue | break  | loop | match | unsafe
+
+// https://github.com/rust-lang/rfcs/blob/master/text/0092-struct-grammar.md
+NoStructLitExpr ::= <<structLiterals 'OFF' <<stmtMode 'OFF' Expr>> >> { elementType = Expr }
+AnyExpr ::= <<structLiterals 'ON' <<stmtMode 'OFF' Expr>> >> { elementType = Expr }
+StmtModeExpr ::= <<structLiterals 'ON' <<stmtMode 'ON' Expr>> >> { elementType = Expr }
+StmtModeExprOff ::= <<stmtMode 'OFF' Expr>> { elementType = Expr }
+
+BlockExpr ::= OuterAttr* [ unsafe &'{' ] SimpleBlock
+
+private AtomExpr ::= LitExpr
+                    | MacroExpr
+                    | StructLiteral
+                    | DotExpr
+                    | IndexExpr
+                    | PathExpr !'('
+                    | CallExpr
+                    | ArrayExpr
+                    | UnitExpr
+                    | TupleOrParenExpr
+
+fake BinaryExpr ::= Expr BinaryOp Expr {
+  methods=[
+    left="/Expr[0]"
+    right="/Expr[1]"
+  ]
+}
+
+fake BinaryOp ::= gtgteq | ltlteq | '|=' | '^=' | '&=' | '=' | '+=' | '-=' | '*=' | '/=' | '%='
+                | '==' | '!='
+                | '<' | '>' | lteq | gteq
+                | ltlt | gtgt
+                | '+' | '-' | '*' | '/' | '%'
+                | oror | andand | '|' | '&' | '^'
+
+AssignBinExpr ::= Expr AssignBinOp Expr    { rightAssociative = true }
+AssignBinOp ::= gtgteq | ltlteq | '|=' | '^=' | '&=' | '=' | '+=' | '-=' | '*=' | '/=' | '%='
+
+CompBinExpr      ::= Expr !<<isCompleteBlockExpr>> CompBinOp StmtModeExprOff
+RelCompBinExpr   ::= Expr !<<isCompleteBlockExpr>> RelCompBinOp StmtModeExprOff
+BitShiftBinExpr  ::= Expr !<<isCompleteBlockExpr>> BitShiftBinOp StmtModeExprOff
+AddBinExpr       ::= Expr !<<isCompleteBlockExpr>> AddBinOp StmtModeExprOff
+MulBinExpr       ::= Expr !<<isCompleteBlockExpr>> MulBinOp StmtModeExprOff
+
+CompBinOp        ::= '==' | '!='
+RelCompBinOp     ::= (!('<<' | '<=') '<' | !('>>' | '>=')  '>' | lteq | gteq)
+BitShiftBinOp    ::= ltlt | gtgt
+AddBinOp         ::= '+' | '-'
+MulBinOp         ::= '*' | '/' | '%'
+
+// <expr> | <expr> has higher priority than <expr> || <expr>
+BoolOrBinExpr    ::= Expr !<<isCompleteBlockExpr>> BoolOrBinOp StmtModeExprOff
+BoolAndBinExpr   ::= Expr !<<isCompleteBlockExpr>> BoolAndBinOp StmtModeExprOff
+BitOrBinExpr     ::= Expr !(<<isCompleteBlockExpr>> | oror) BitOrBinOp StmtModeExprOff
+BitAndBinExpr    ::= Expr !(<<isCompleteBlockExpr>> | andand) BitAndBinOp StmtModeExprOff
+BitXorBinExpr    ::= Expr !<<isCompleteBlockExpr>> BitXorBinOp StmtModeExprOff
+
+BoolOrBinOp      ::= oror
+BoolAndBinOp     ::= andand
+BitOrBinOp       ::= '|'
+BitAndBinOp      ::= '&'
+BitXorBinOp      ::= '^'
+
+CastExpr ::= Expr (as | ':')  ScalarTypeReference
+
+TryExpr ::= Expr '?'
+
+UnaryExpr ::= OuterAttr* (box | '-' | '*' | '!' | '&' mut?) Expr
+
+LambdaExpr ::= OuterAttr* move? LambdaParameters RetType? AnyExpr
+
+StructLiteral ::= <<checkStructAllowed>> OuterAttr* PathGenericArgsWithColonsNoTypeQual StructLiteralBody
+
+StructLiteralBody ::= '{' StructLiteralField_with_recover* ('..'  AnyExpr)? '}' { pin = 1 }
+
+StructLiteralField ::= OuterAttr* identifier [ ':' AnyExpr ] {
+  pin = 2
+}
+
+private StructLiteralField_with_recover ::= StructLiteralField (',' | &'}') {
+  pin = 1
+  recoverWhile = StructLiteralField_recover
+}
+
+private StructLiteralField_recover ::= !(identifier | ',' | '}' | '..' | '#')
+
+PathExpr ::= OuterAttr* PathGenericArgsWithColons
+
+WhileExpr ::= OuterAttr* LabelDecl? while Condition SimpleBlock {
+  pin = 'while'
+}
+Condition ::= [ let Pat '=' ] NoStructLitExpr
+
+LoopExpr ::= OuterAttr* LabelDecl? loop SimpleBlock {
+  pin = 'loop'
+}
+
+ContExpr ::= OuterAttr* continue Label?
+
+BreakExpr ::= OuterAttr* break Label? AnyExpr?
+
+ForExpr ::= OuterAttr* LabelDecl? for Pat in NoStructLitExpr SimpleBlock {
+  pin = 'for'
+}
+
+LabelDecl ::= QUOTE_IDENTIFIER ':'
+Label ::= QUOTE_IDENTIFIER
+
+MatchExpr ::= OuterAttr* match NoStructLitExpr MatchBody {
+  pin = 'match'
+}
+MatchBody ::= '{' MatchArm* '}' { pin = 1 }
+MatchArm ::= OuterAttr* '|'? Pat ('|' Pat)* MatchArmGuard? '=>' StmtModeExpr (',' | (&'}' | <<isBlock>>)) {
+  pin = 3
+  recoverWhile = MatchArm_recover
+}
+private MatchArm_recover ::= !(Pat_first | OuterAttr_first | '}' | '|')
+MatchArmGuard ::= if AnyExpr
+
+IfExpr ::= OuterAttr* if Condition SimpleBlock ElseBranch? {
+  pin = 'if'
+}
+ElseBranch ::= else ( IfExpr | SimpleBlock )
+
+RetExpr ::= OuterAttr* return Expr?
+
+UnitExpr ::= OuterAttr* '(' ')'
+
+fake TupleExpr ::= '(' AnyExpr+ ')'
+fake ParenExpr ::= '(' AnyExpr ')'
+
+// XXX: without the `pin`, upper rules won't work, GK can change element type
+// of the frame only if it already has some type
+// https://github.com/JetBrains/Grammar-Kit/blob/d716ade658c1f8e1f84bd0d61764c9949a7df5f2/src/org/intellij/grammar/parser/GeneratedParserUtilBase.java#L656
+TupleOrParenExpr ::= OuterAttr* '(' AnyExpr (TupleExprUpper | ParenExprUpper) {
+  pin = 2
+}
+upper TupleExprUpper ::= ',' [ AnyExpr (',' AnyExpr)* ','? ] ')' { elementType = TupleExpr }
+upper ParenExprUpper ::= ')' { elementType = ParenExpr }
+
+ArrayExpr ::= OuterAttr* '[' ArrayInitializer ']' {
+  pin = 2
+}
+private ArrayInitializer ::= [ AnyExpr ( ';' AnyExpr | (',' AnyExpr)* ','? ) ]
+
+fake RangeExpr ::= Expr? ('..' | '...' | '..=') Expr?
+
+FullRangeExpr ::= Expr ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) | '..=' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
+OpenRangeExpr ::=      ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) | '..=' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
+
+IndexExpr ::= Expr IndexArg
+// Do not inline this rule, it breaks expression parsing
+private IndexArg ::= '[' Expr ']'
+
+CallExpr ::= Expr !<<isCompleteBlockExpr>> ValueArgumentList
+ValueArgumentList ::= '(' <<comma_separated_list AnyExpr>>? ')' { pin = 1 }
+
+DotExpr ::= Expr '.'  MethodOrField
+
+private MethodOrField ::= () (MethodCall | FieldLookup) { pin = 1}
+
+FieldLookup ::= identifier | INTEGER_LITERAL
+
+MethodCall ::= identifier ColonTypeArgumentList? ValueArgumentList
+
+LitExpr ::= OuterAttr*
+  (STRING_LITERAL | BYTE_STRING_LITERAL
+  | RAW_STRING_LITERAL | RAW_BYTE_STRING_LITERAL
+  | CHAR_LITERAL | BYTE_LITERAL
+  | INTEGER_LITERAL | FLOAT_LITERAL
+  | BOOL_LITERAL)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Macros
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+MacroDefinition ::= AttrsAndVis "macro_rules" '!' identifier MacroDefinitionBody <<macroSemicolon>>{
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+  pin = 2
+}
+
+MacroDefinitionBody ::= <<any_braces (MacroDefinitionCase ';'?)*>>
+
+MacroDefinitionCase ::= MacroPattern '=>' MacroExpansion { pin = 1 }
+
+MacroPattern ::= <<any_braces MacroPatternContents >>
+MacroPatternContents ::=
+  (MacroPattern | MacroBinding | MacroBindingGroup | <<unpairedToken>>)*
+
+MacroBinding ::= '$' MetaVarIdentifier ':' identifier {
+  pin = 2
+}
+MetaVarIdentifier ::= <<macroIdentifier>>
+MacroBindingGroup ::= '$' '(' MacroPatternContents ')' MacroBindingGroupSeparator? ('*' | '+' | '?') { pin = 2 }
+MacroBindingGroupSeparator ::= <<macroBindingGroupSeparatorToken>>
+
+MacroExpansion ::= <<any_braces MacroExpansionContents>>
+
+MacroExpansionContents ::=
+  (MacroExpansion | MacroReference | MacroExpansionReferenceGroup | <<unpairedToken>>)*
+
+MacroReference ::= '$' MetaVarIdentifier
+MacroExpansionReferenceGroup ::= '$' '(' MacroExpansionContents ')' MacroExpansionGroupSeparator? ('*' | '+' | '?') { pin = 2 }
+MacroExpansionGroupSeparator ::= <<macroBindingGroupSeparatorToken>>
+
+
+
+MacroCall ::= MacroHead <<macroSemicolon>> {
+  pin = 2
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+MacroCallNoSemicolons ::= MacroHead {
+  pin = 2
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
+
+private MacroHead ::= AttrsAndVis &(identifier '!') (SpecialMacro | identifier '!' identifier? MacroArgument)
+
+MacroArgument ::= <<any_braces CompactTT>>
+// `CompactTT` differs from `TT` in that it does not create an additional `TT` nodes for each unpaired token
+CompactTT ::= (<<any_braces CompactTT>> | <<unpairedToken>>)*
+
+// Used only manually in (external) macro matching code
+//noinspection BnfUnusedRule
+TT ::= <<any_braces TT*>> | <<unpairedToken>>
+
+
+private SpecialMacro ::= TryMacro | FormatLikeMacro | AssertMacro | VecMacro | LogMacro
+
+private TryMacro ::= "try" '!' TryMacroArgument { pin = 2 }
+TryMacroArgument ::= <<any_braces AnyExpr>>
+
+// https://doc.rust-lang.org/std/fmt/
+private FormatLikeMacro ::=
+  ("format" | "format_args" | "write" | "writeln" | "print" | "println" | "eprint" | "eprintln" | "panic" | "unimplemented" | "unreachable")
+  '!' FormatMacroArgument { pin = 2 }
+
+FormatMacroArgument ::= <<any_braces [ <<comma_separated_list FormatMacroArg>> ] >>
+FormatMacroArg ::= [ identifier '=' ] AnyExpr
+
+
+private AssertMacro ::=
+  ("assert" | "debug_assert" | "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne")
+  '!' AssertMacroArgument { pin = 2 }
+
+AssertMacroArgument ::= <<any_braces (AnyExpr [ ',' <<comma_separated_list FormatMacroArg>> ])>>
+
+
+private VecMacro ::= "vec" '!' VecMacroArgument { pin = 2 }
+VecMacroArgument ::= <<any_braces ArrayInitializer >>
+
+
+private LogMacro ::=
+  ( "trace" | "log" | "warn" | "debug" | "error" | "info" )
+  '!' LogMacroArgument { pin = 2 }
+
+LogMacroArgument ::=
+  <<any_braces (('target' ':' Expr ','?)? (<<comma_separated_list FormatMacroArg>>)?)>>
+
+
+private meta any_braces ::=
+  '(' <<param>> ')'
+| '{' <<param>> '}'
+| '[' <<param>> ']'
+{ pin = 1 }
+
+// Macro wrappers
+MacroExpr ::= OuterAttr* MacroCallNoSemicolons
+
+PatMacro ::= MacroCallNoSemicolons
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Statements
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+fake Block ::= '{' InnerAttr* (Item | Stmt)* Expr? '}' {
+  pin = 1
+}
+
+SimpleBlock ::= '{' BlockElement* '}' {
+  pin = 1
+  elementType = Block
+}
+
+InnerAttrsAndBlock ::= '{' InnerAttr* BlockElement* '}' {
+  pin = 1
+  elementType = Block
+}
+private BlockElement ::= !'}' (ExprStmtOrLastExpr | Stmt | Item) {
+  pin = 1
+  recoverWhile = BlockElement_recover
+}
+private BlockElement_recover ::= !('}' | Item_first | Expr_first | let | ';')
+
+Stmt ::= LetDecl | EmptyStmt | never ';'
+
+ExprStmtOrLastExpr ::= StmtModeExpr (ExprStmtUpper | LastExprUpper)
+
+upper ExprStmtUpper ::= ';' | () <<isBlock>> !('}') { elementType = ExprStmt }
+upper LastExprUpper ::= () &'}' { elementType = Expr pin = 1 }
+
+fake ExprStmt ::= AnyExpr ';'? { extends = Stmt }
+
+LetDecl ::= OuterAttr* let Pat TypeAscription? [ '=' AnyExpr ] ';' {
+  extends = Stmt
+  pin = "let"
+}
+
+EmptyStmt ::= ';' { extends = Stmt }
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Utils
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Keep in sync with `collapsedTokenType`
+private gtgteq ::= <<gtgteqImpl>>  | never GTGTEQ { name = ">>=" }
+private gtgt   ::= <<gtgtImpl>>    | never GTGT   { name = ">>" }
+private gteq   ::= <<gteqImpl>>    | never GTEQ   { name = ">=" }
+private ltlteq ::= <<ltlteqImpl>>  | never LTLTEQ { name = "<<=" }
+private ltlt   ::= <<ltltImpl>>    | never LTLT   { name = "<<" }
+private lteq   ::= <<lteqImpl>>    | never LTEQ   { name = "<=" }
+private oror   ::= <<ororImpl>>    | never OROR   { name = "||" }
+private andand ::= <<andandImpl>>  | never ANDAND { name = "&&" }
+
+private never ::= !()
+
+// Trailing commas are allowed
+private meta comma_separated_list ::= <<param>> ( ',' <<param>> )* ','?
+private meta list_element ::= <<param>> !'+' (',' | &'>') { pin = 2 }

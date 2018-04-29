@@ -1,0 +1,6 @@
+language: java
+language: kotlin
+jdk:
+- oraclejdk8
+script:
+- bash gradlew jar --info --warning-mode=all
